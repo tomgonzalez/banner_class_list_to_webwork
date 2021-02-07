@@ -1,0 +1,74 @@
+import re
+import os
+import pandas as pd
+
+current_semester = 'spring2021'
+db_file_name = current_semester + '.db'
+
+cols = ['crn', 'dept', 'crs', 'title', 'sec', 's_id', 'last', 'first', 'mi']
+df = pd.DataFrame(columns=cols)
+df = df.astype({'crn':int, 'dept':str, 'crs':'str', 'title':'str', 'sec':str, 's_id':int, 'last':str, 'first':str, 'mi':str}) 
+
+pattern1 = 'CRN:\s+(?P<crn>\d{5})\s+(?P<dept_alpha_code>[A-Z]{4})\s+(?P<course_alphanum_code>\d{4}[A-Z]*)\s+Title:\s+(?P<title>.+(?=Sec))Sec:\s+(?P<sec_alphanum_code>\d{2}[A-Z]*)\s+Div:\s+\d{4}\s+Dpt:\s+\d{4}'
+pattern2 = '(?P<s_id>\d{9})\s+(?P<before_comma>[^,]+),\s(?P<after_comma>.+)'
+pattern3 = '\d:\s+\d*-\d*\s+[A-Z]\s+'
+
+p1 = re.compile(pattern1)
+p2 = re.compile(pattern2)
+p3 = re.compile(pattern3)
+
+for root, dirs, files, in os.walk('.'):
+    for thing in files:
+        if thing == 'spring2019.db':
+            os.remove(thing)
+        if thing[-4:] == '.txt':    
+            with open(thing) as f:
+                for line in f:
+                    m1 = p1.match(line)
+                    m2 = p2.match(line)
+                    m3 = p3.match(line)
+                    if m1 != None:
+                        crn = m1.group('crn')
+                        dept = m1.group('dept_alpha_code')
+                        course = m1.group('course_alphanum_code')
+                        section = m1.group('sec_alphanum_code')
+                        title = m1.group('title').strip()
+                    if m3 != None:
+                        print(line)
+                    if m2 != None:
+                        s_id = m2.group('s_id')
+                        last = m2.group('before_comma').strip()
+                        first = m2.group('after_comma').strip()
+                        if first[-1].isupper():
+                           mi = first[-1]   
+                           first = first[0:len(first)-1].strip()
+                        else:
+                            mi = ''
+                            first = first.strip()
+                           #out = [crn, dept, course, title, section, s_id, last, first, middle_initial]
+                        out = {'crn':crn, 'dept':dept, 'crs':course, 'title':title, 'sec':section, 's_id':s_id, 'last':last, 'first':first, 'mi':mi}
+                        #print(out)
+                        df = df.append(out, ignore_index=True)
+df = df.astype({'crn':int, 'dept':str, 'crs':'str', 'title':'str', 'sec':str, 's_id':int, 'last':str, 'first':str, 'mi':str}) 
+
+import sqlite3
+conn = sqlite3.connect(db_file_name)
+df.to_sql('rawdata', conn)
+c = conn.cursor()
+c.execute("""CREATE TABLE "course" ( `course_dept` TEXT NOT NULL, `course_number` TEXT NOT NULL, `course_title` TEXT, PRIMARY KEY(`course_dept`,`course_number`) )""")
+c.execute("""CREATE TABLE "student" ( `stu_id` INTEGER NOT NULL UNIQUE, `stu_last` TEXT NOT NULL, `stu_first` TEXT NOT NULL, `stu_mi` TEXT, PRIMARY KEY(`stu_id`) )""")
+c.execute("""CREATE TABLE `section` ( `section_crn` INTEGER NOT NULL UNIQUE, `section_sec` TEXT NOT NULL, `course_dept` TEXT NOT NULL, `course_number` TEXT NOT NULL, PRIMARY KEY(`section_crn`), FOREIGN KEY(`course_dept`,`course_number`) REFERENCES `course`(`course_dept`,`course_number`) )""")
+c.execute("""CREATE TABLE "schedule_line_item" ( `section_crn` INTEGER, `stu_id` INTEGER, FOREIGN KEY(`section_crn`) REFERENCES `section`(`section_crn`), FOREIGN KEY(`stu_id`) REFERENCES `student`(`stu_id`), PRIMARY KEY(`section_crn`,`stu_id`) )""")
+c.execute("""INSERT INTO student SELECT DISTINCT s_id, last, first, mi FROM rawdata""")
+c.execute("""INSERT INTO course SELECT DISTINCT dept, crs, title FROM rawdata""")
+c.execute("""INSERT INTO section SELECT DISTINCT crn, sec, dept, crs FROM rawdata """)
+c.execute("""INSERT INTO schedule_line_item SELECT crn, s_id FROM rawdata """)
+df_roles = pd.read_sql("""SELECT section.section_crn, section.course_dept, section.course_number, section.section_sec, student.stu_id, student.stu_last, student.stu_first, student.stu_mi
+             FROM section, schedule_line_item, student
+             WHERE section.section_crn = schedule_line_item.section_crn AND schedule_line_item.stu_id = student.stu_id
+             ORDER BY section.section_crn, student.stu_last, student.stu_first, student.stu_mi""", conn)
+df_roles.to_csv('upper_level_class_roles.csv')
+df_students = pd.read_sql("""SELECT DISTINCT * FROM student ORDER BY stu_last, stu_first, stu_mi""", conn)
+df_students.to_csv('upper_level_math_students.csv')
+conn.commit()
+conn.close()
